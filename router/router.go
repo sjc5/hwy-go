@@ -26,20 +26,22 @@ var PathTypeDynamicLayout = "dynamic-layout"
 var PathTypeNonUltimateSplat = "non-ultimate-splat"
 
 type Path struct {
-	Pattern   string
-	Segments  *[]string
-	PathType  string
-	OutPath   string
-	SrcPath   string
-	DataFuncs *DataFuncs
+	Pattern   string     `json:"pattern"`
+	Segments  *[]string  `json:"segments"`
+	PathType  string     `json:"pathType"`
+	OutPath   string     `json:"outPath"`
+	SrcPath   string     `json:"srcPath"`
+	Deps      *[]string  `json:"deps"`
+	DataFuncs *DataFuncs `json:",omitempty"`
 }
 
 type JSONSafePath struct {
-	Pattern  string
-	Segments *[]string
-	PathType string
-	OutPath  string
-	SrcPath  string
+	Pattern  string    `json:"pattern"`
+	Segments *[]string `json:"segments"`
+	PathType string    `json:"pathType"`
+	OutPath  string    `json:"outPath"`
+	SrcPath  string    `json:"srcPath"`
+	Deps     *[]string `json:"deps"`
 }
 
 type HeadBlock struct {
@@ -79,6 +81,7 @@ type ActivePathData struct {
 	ActiveHeads                 *[]Head
 	SplatSegments               *[]string
 	Params                      *map[string]string
+	Deps                        *[]string
 }
 
 type matcherOutput struct {
@@ -106,6 +109,7 @@ type MatchingPath struct {
 	DataFuncs          *DataFuncs
 	OutPath            string
 	Params             *map[string]string
+	Deps               *[]string
 }
 
 type DecoratedPath struct {
@@ -118,6 +122,7 @@ type gmpdItem struct {
 	Params                      *map[string]string
 	FullyDecoratedMatchingPaths *[]*DecoratedPath
 	ImportURLs                  *[]string
+	Deps                        *[]string
 }
 
 type GetRouteDataOutput struct {
@@ -132,13 +137,17 @@ type GetRouteDataOutput struct {
 	ActionData                  *[]interface{}           `json:"actionData"`
 	AdHocData                   *map[string]*interface{} `json:"adHocData"`
 	BuildID                     string                   `json:"buildID"`
+	Deps                        *[]string                `json:"deps"`
 }
 
 var instancePaths *[]Path
+var instanceClientEntryDeps *[]string
+
+type GetBasePaths func() (*PathsFile, error)
 
 type Hwy struct {
 	DefaultHeadBlocks []HeadBlock
-	GetBasePaths      func() ([]Path, error)
+	GetBasePaths      GetBasePaths
 	DataFuncsMap      DataFuncsMap
 }
 
@@ -159,6 +168,7 @@ type SSRInnerHTMLInput struct {
 	Params                      *map[string]string
 	ActionData                  *[]interface{}
 	AdHocData                   interface{}
+	Deps                        *[]string
 }
 
 func getInitialMatchingPaths(pathToUse string) *[]MatchingPath {
@@ -180,6 +190,7 @@ func getInitialMatchingPaths(pathToUse string) *[]MatchingPath {
 				Segments:           path.Segments,
 				DataFuncs:          path.DataFuncs,
 				Params:             matcherOutput.params,
+				Deps:               path.Deps,
 			})
 		}
 	}
@@ -574,6 +585,8 @@ func getMatchingPathData(r *http.Request) *ActivePathData {
 		item.FullyDecoratedMatchingPaths = decoratePaths(matchingPaths)
 		item.SplatSegments = splatSegments
 		item.Params = lastPath.Params
+		deps := GetDeps(matchingPaths)
+		item.Deps = &deps
 		isSpam := len(*matchingPaths) == 0
 		gmpdCache.Set(realPath, item, isSpam)
 	}
@@ -677,6 +690,7 @@ func getMatchingPathData(r *http.Request) *ActivePathData {
 	activePathData.ActionData = &locActionData
 	activePathData.SplatSegments = item.SplatSegments
 	activePathData.Params = item.Params
+	activePathData.Deps = item.Deps
 	return &activePathData
 }
 
@@ -718,12 +732,26 @@ func (h Hwy) addDataFuncsToPaths() {
 
 func (h Hwy) Initialize() error {
 	if h.GetBasePaths != nil {
-		paths, err := h.GetBasePaths()
+		pathsFile, err := h.GetBasePaths()
 		if err != nil {
 			return err
 		}
-		instancePaths = &paths
+		if instancePaths == nil {
+			ip := make([]Path, 0, len(pathsFile.Paths))
+			instancePaths = &ip
+		}
+		for _, path := range pathsFile.Paths {
+			*instancePaths = append(*instancePaths, Path{
+				Pattern:  path.Pattern,
+				Segments: path.Segments,
+				PathType: path.PathType,
+				OutPath:  path.OutPath,
+				SrcPath:  path.SrcPath,
+				Deps:     path.Deps,
+			})
+		}
 		h.addDataFuncsToPaths()
+		instanceClientEntryDeps = &pathsFile.ClientEntryDeps
 	}
 	return nil
 }
@@ -755,6 +783,7 @@ func (h Hwy) GetRouteData(r *http.Request) (*GetRouteDataOutput, error) {
 		ActionData:                  activePathData.ActionData,
 		AdHocData:                   nil, // __TODO
 		BuildID:                     buildID,
+		Deps:                        activePathData.Deps,
 	}, nil
 }
 
@@ -916,6 +945,13 @@ func GetSSRInnerHTML(routeData *GetRouteDataOutput, isDev bool) (*template.HTML,
 	x.params = {{.Params}};
 	x.actionData = {{.ActionData}};
 	x.adHocData = {{.AdHocData}};
+	const deps = {{.Deps}};
+	deps.forEach(module => {
+		const link = document.createElement('link');
+		link.rel = 'modulepreload';
+		link.href = "/public/" + module;
+		document.head.appendChild(link);
+	 });
 </script>`)
 	if err != nil {
 		return nil, err
@@ -932,6 +968,7 @@ func GetSSRInnerHTML(routeData *GetRouteDataOutput, isDev bool) (*template.HTML,
 		Params:                      routeData.Params,
 		ActionData:                  routeData.ActionData,
 		AdHocData:                   routeData.AdHocData,
+		Deps:                        routeData.Deps,
 	}
 	err = tmpl.Execute(&htmlBuilder, dto)
 	if err != nil {
@@ -998,4 +1035,21 @@ func matcher(pattern string, path string) matcherOutput {
 		score:              strength.Score,
 		realSegmentsLength: strength.RealSegmentsLength,
 	}
+}
+
+func GetDeps(matchingPaths *[]*MatchingPath) []string {
+	var deps []string
+	for _, path := range *matchingPaths {
+		for _, dep := range *path.Deps {
+			if !slices.Contains(deps, dep) {
+				deps = append(deps, dep)
+			}
+		}
+	}
+	for _, dep := range *instanceClientEntryDeps {
+		if !slices.Contains(deps, dep) {
+			deps = append(deps, dep)
+		}
+	}
+	return deps
 }

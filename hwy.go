@@ -9,6 +9,8 @@ type DataFuncsMap = router.DataFuncsMap
 type DataProps = router.DataProps
 type HeadProps = router.HeadProps
 type Path = router.Path
+type GetBasePaths = router.GetBasePaths
+type PathsFile = router.PathsFile
 
 var Build = router.Build
 var NewLRUCache = router.NewLRUCache

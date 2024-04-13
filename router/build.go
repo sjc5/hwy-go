@@ -3,9 +3,11 @@ package router
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/evanw/esbuild/pkg/api"
@@ -125,7 +127,27 @@ func readPathsFromDisk(path string) (*[]JSONSafePath, error) {
 	return &paths, nil
 }
 
+type ImportPath = string
+
+type MetafileImport struct {
+	Path ImportPath `json:"path"`
+	Kind string     `json:"kind"`
+}
+
+type MetafileJSON struct {
+	Outputs map[ImportPath]struct {
+		Imports    []MetafileImport `json:"imports"`
+		EntryPoint string           `json:"entryPoint"`
+	} `json:"outputs"`
+}
+
+type PathsFile struct {
+	Paths           []JSONSafePath `json:"paths"`
+	ClientEntryDeps []ImportPath   `json:"clientEntryDeps"`
+}
+
 func Build(opts BuildOptions) error {
+	fmt.Println("Building Hwy...")
 	pathsJSONOut := filepath.Join(opts.UnhashedOutDir, "hwy_paths.json")
 	err := writePathsToDisk(opts.PagesSrcDir, pathsJSONOut)
 	if err != nil {
@@ -137,7 +159,7 @@ func Build(opts BuildOptions) error {
 	}
 	sourcemap := api.SourceMapNone
 	if opts.IsDev {
-		sourcemap = api.SourceMapInline
+		sourcemap = api.SourceMapLinked
 	}
 	paths, err := readPathsFromDisk(pathsJSONOut)
 	if err != nil {
@@ -147,6 +169,12 @@ func Build(opts BuildOptions) error {
 	entryPoints = append(entryPoints, opts.ClientEntry)
 	for _, path := range *paths {
 		entryPoints = append(entryPoints, path.SrcPath)
+	}
+	// clear hashed out dir
+	// __TODO consider using a hwy_internal dir instead of in root
+	err = os.RemoveAll(opts.HashedOutDir)
+	if err != nil {
+		return err
 	}
 	result := api.Build(api.BuildOptions{
 		Format:      api.FormatESModule,
@@ -171,25 +199,42 @@ func Build(opts BuildOptions) error {
 	if len(result.Errors) > 0 {
 		return errors.New(result.Errors[0].Text)
 	}
-	metafileJSONMap := map[string]interface{}{}
+	metafileJSONMap := MetafileJSON{}
 	err = json.Unmarshal([]byte(result.Metafile), &metafileJSONMap)
 	if err != nil {
 		return err
 	}
+
 	hwyClientEntry := ""
-	for key, output := range metafileJSONMap["outputs"].(map[string]interface{}) {
-		entryPoint := esbuildOutputToEntryPointStr(output)
+	hwyClientEntryDeps := []string{}
+	for key, output := range metafileJSONMap.Outputs {
+		entryPoint := output.EntryPoint
+		deps, err := findAllDependencies(&metafileJSONMap, key)
+		if err != nil {
+			return err
+		}
 		if opts.ClientEntry == entryPoint {
 			hwyClientEntry = filepath.Base(key)
+			depsWithoutClientEntry := make([]string, 0, len(deps)-1)
+			for _, dep := range deps {
+				if dep != hwyClientEntry {
+					depsWithoutClientEntry = append(depsWithoutClientEntry, dep)
+				}
+			}
+			hwyClientEntryDeps = depsWithoutClientEntry
 		} else {
 			for i, path := range *paths {
 				if path.SrcPath == entryPoint {
 					(*paths)[i].OutPath = filepath.Base(key)
+					(*paths)[i].Deps = &deps
 				}
 			}
 		}
 	}
-	pathsAsJSON, err := json.Marshal(*paths)
+	pathsAsJSON, err := json.Marshal(PathsFile{
+		Paths:           *paths,
+		ClientEntryDeps: hwyClientEntryDeps,
+	})
 	if err != nil {
 		return err
 	}
@@ -197,11 +242,13 @@ func Build(opts BuildOptions) error {
 	if err != nil {
 		return err
 	}
+
 	// Mv file at path stored in hwyClientEntry var to ../ in OutDir
 	clientEntryFileBytes, err := os.ReadFile(filepath.Join(opts.HashedOutDir, hwyClientEntry))
 	if err != nil {
 		return err
 	}
+
 	err = os.WriteFile(filepath.Join(opts.ClientEntryOut, "hwy_client_entry.js"), clientEntryFileBytes, os.ModePerm)
 	if err != nil {
 		return err
@@ -210,6 +257,7 @@ func Build(opts BuildOptions) error {
 	if err != nil {
 		return err
 	}
+
 	return nil
 }
 
@@ -217,14 +265,33 @@ func Build(opts BuildOptions) error {
 // 2 -- Run Hwy build of the frontend
 // 3 -- Run Kiruna build of the backend
 
-func esbuildOutputToEntryPointStr(output interface{}) string {
-	if outputMap, ok := output.(map[string]interface{}); ok {
-		entryPointVal, ok := outputMap["entryPoint"]
-		if ok {
-			if entryPointStr, ok := entryPointVal.(string); ok {
-				return entryPointStr
+func findAllDependencies(metafile *MetafileJSON, entry ImportPath) ([]ImportPath, error) {
+	seen := make(map[ImportPath]bool)
+	var result []ImportPath
+
+	var recurse func(path ImportPath)
+	recurse = func(path ImportPath) {
+		if seen[path] {
+			return
+		}
+		seen[path] = true
+		result = append(result, path)
+
+		if output, exists := metafile.Outputs[path]; exists {
+			for _, imp := range output.Imports {
+				recurse(imp.Path)
 			}
 		}
 	}
-	return ""
+
+	recurse(entry)
+
+	cleanResults := make([]ImportPath, 0, len(result)+1)
+	for _, res := range result {
+		cleanResults = append(cleanResults, filepath.Base(res))
+	}
+	if !slices.Contains(cleanResults, filepath.Base(entry)) {
+		cleanResults = append(cleanResults, filepath.Base(entry))
+	}
+	return cleanResults, nil
 }
