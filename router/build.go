@@ -14,12 +14,13 @@ import (
 )
 
 type BuildOptions struct {
-	IsDev          bool
-	ClientEntry    string
-	PagesSrcDir    string
-	HashedOutDir   string
-	UnhashedOutDir string
-	ClientEntryOut string
+	IsDev           bool
+	ClientEntry     string
+	PagesSrcDir     string
+	HashedOutDir    string
+	UnhashedOutDir  string
+	ClientEntryOut  string
+	UsePreactCompat bool
 }
 
 // __TODO -- allow for dirs starting with double underscore to be ignored
@@ -176,6 +177,13 @@ func Build(opts BuildOptions) error {
 	if err != nil {
 		return err
 	}
+	alias := map[string]string{}
+	if opts.UsePreactCompat {
+		alias["react"] = "preact/compat"
+		alias["react-dom/test-utils"] = "preact/test-utils"
+		alias["react-dom"] = "preact/compat"
+		alias["react/jsx-runtime"] = "preact/jsx-runtime"
+	}
 	result := api.Build(api.BuildOptions{
 		Format:      api.FormatESModule,
 		Bundle:      true,
@@ -195,6 +203,7 @@ func Build(opts BuildOptions) error {
 		Write:             true,
 		EntryNames:        "hwy_entry__[hash]",
 		Metafile:          true,
+		Alias:             alias,
 	})
 	if len(result.Errors) > 0 {
 		return errors.New(result.Errors[0].Text)
