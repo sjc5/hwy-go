@@ -45,9 +45,9 @@ type JSONSafePath struct {
 }
 
 type HeadBlock struct {
-	Tag        string
-	Attributes map[string]string
-	Title      string
+	Tag        string            `json:"tag,omitempty"`
+	Attributes map[string]string `json:"attributes,omitempty"`
+	Title      string            `json:"title,omitempty"`
 }
 
 type Loader func(DataProps) (interface{}, error)
