@@ -56,6 +56,7 @@ type Head func(HeadProps) (*[]HeadBlock, error)
 
 type DataProps struct {
 	Request       *http.Request
+	RequestMutex  *sync.Mutex
 	Params        *map[string]string
 	SplatSegments *[]string
 }
@@ -602,10 +603,10 @@ func getMatchingPathData(r *http.Request) *ActivePathData {
 	if actionExists {
 		actionData, actionDataError = getActionData(r, &lastPath.DataFuncs.Action, item.Params, item.SplatSegments)
 	}
-
 	loadersData := make([]interface{}, len(*item.FullyDecoratedMatchingPaths))
 	errors := make([]error, len(*item.FullyDecoratedMatchingPaths))
 	var wg sync.WaitGroup
+	var requestMutex sync.Mutex
 	for i, path := range *item.FullyDecoratedMatchingPaths {
 		wg.Add(1)
 		go func(i int, dataFuncs *DataFuncs) {
@@ -616,6 +617,7 @@ func getMatchingPathData(r *http.Request) *ActivePathData {
 			}
 			loadersData[i], errors[i] = (dataFuncs.Loader)(DataProps{
 				Request:       r,
+				RequestMutex:  &requestMutex,
 				Params:        item.Params,
 				SplatSegments: item.SplatSegments,
 			})
@@ -909,7 +911,13 @@ func GetHeadElements(routeData *GetRouteDataOutput) (*template.HTML, error) {
 	headBlocks = append(headBlocks, append(*routeData.RestHeadBlocks, &restEnd)...)
 
 	headElsTmpl, err := template.New("headblock").Parse(
-		`{{range $key, $value := .Attributes}}{{$key}}="{{$value}}" {{end}} />` + "\n",
+		`{{range $key, $value := .Attributes}}{{$key}}="{{$value}}" {{end}}/>` + "\n",
+	)
+	if err != nil {
+		return nil, err
+	}
+	scriptBlockTmpl, err := template.New("scriptblock").Parse(
+		`{{range $key, $value := .Attributes}}{{$key}}="{{$value}}" {{end}}></script>` + "\n",
 	)
 	if err != nil {
 		return nil, err
@@ -919,7 +927,11 @@ func GetHeadElements(routeData *GetRouteDataOutput) (*template.HTML, error) {
 			continue
 		}
 		htmlBuilder.WriteString("<" + block.Tag + " ")
-		err = headElsTmpl.Execute(&htmlBuilder, block)
+		if block.Tag == "script" {
+			err = scriptBlockTmpl.Execute(&htmlBuilder, block)
+		} else {
+			err = headElsTmpl.Execute(&htmlBuilder, block)
+		}
 		if err != nil {
 			return nil, err
 		}
