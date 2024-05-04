@@ -1,8 +1,11 @@
 package router
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"html/template"
+	"io/fs"
 	"net/http"
 	"slices"
 	"sort"
@@ -56,7 +59,6 @@ type Head func(HeadProps) (*[]HeadBlock, error)
 
 type DataProps struct {
 	Request       *http.Request
-	RequestMutex  *sync.Mutex
 	Params        *map[string]string
 	SplatSegments *[]string
 }
@@ -68,9 +70,10 @@ type HeadProps struct {
 }
 
 type DataFuncs struct {
-	Loader Loader
-	Action Action
-	Head   Head
+	Loader         Loader
+	Action         Action
+	Head           Head
+	MutateResponse func(http.ResponseWriter)
 }
 
 type ActivePathData struct {
@@ -144,12 +147,12 @@ type GetRouteDataOutput struct {
 var instancePaths *[]Path
 var instanceClientEntryDeps *[]string
 
-type GetBasePaths func() (*PathsFile, error)
-
 type Hwy struct {
-	DefaultHeadBlocks []HeadBlock
-	GetBasePaths      GetBasePaths
-	DataFuncsMap      DataFuncsMap
+	DefaultHeadBlocks    []HeadBlock
+	FS                   fs.FS
+	DataFuncsMap         DataFuncsMap
+	RootTemplateLocation string
+	RootTemplateData     map[string]interface{}
 }
 
 type SortHeadBlocksOutput struct {
@@ -561,7 +564,7 @@ func getBaseSplatSegments(realPath string) *[]string {
 
 var gmpdCache = NewLRUCache(500_000)
 
-func getMatchingPathData(r *http.Request) *ActivePathData {
+func getMatchingPathData(w http.ResponseWriter, r *http.Request) *ActivePathData {
 	realPath := r.URL.Path
 	if realPath != "/" && realPath[len(realPath)-1] == '/' {
 		realPath = realPath[:len(realPath)-1]
@@ -606,7 +609,6 @@ func getMatchingPathData(r *http.Request) *ActivePathData {
 	loadersData := make([]interface{}, len(*item.FullyDecoratedMatchingPaths))
 	errors := make([]error, len(*item.FullyDecoratedMatchingPaths))
 	var wg sync.WaitGroup
-	var requestMutex sync.Mutex
 	for i, path := range *item.FullyDecoratedMatchingPaths {
 		wg.Add(1)
 		go func(i int, dataFuncs *DataFuncs) {
@@ -617,13 +619,19 @@ func getMatchingPathData(r *http.Request) *ActivePathData {
 			}
 			loadersData[i], errors[i] = (dataFuncs.Loader)(DataProps{
 				Request:       r,
-				RequestMutex:  &requestMutex,
 				Params:        item.Params,
 				SplatSegments: item.SplatSegments,
 			})
 		}(i, path.DataFuncs)
 	}
 	wg.Wait()
+
+	// Response mutation needs to be in sync, with the last path being the most important
+	for _, path := range *item.FullyDecoratedMatchingPaths {
+		if path.DataFuncs != nil && path.DataFuncs.MutateResponse != nil {
+			path.DataFuncs.MutateResponse(w)
+		}
+	}
 
 	var thereAreErrors bool
 	outermostErrorIndex := -1
@@ -732,34 +740,54 @@ func (h Hwy) addDataFuncsToPaths() {
 	}
 }
 
-func (h Hwy) Initialize() error {
-	if h.GetBasePaths != nil {
-		pathsFile, err := h.GetBasePaths()
-		if err != nil {
-			return err
-		}
-		if instancePaths == nil {
-			ip := make([]Path, 0, len(pathsFile.Paths))
-			instancePaths = &ip
-		}
-		for _, path := range pathsFile.Paths {
-			*instancePaths = append(*instancePaths, Path{
-				Pattern:  path.Pattern,
-				Segments: path.Segments,
-				PathType: path.PathType,
-				OutPath:  path.OutPath,
-				SrcPath:  path.SrcPath,
-				Deps:     path.Deps,
-			})
-		}
-		h.addDataFuncsToPaths()
-		instanceClientEntryDeps = &pathsFile.ClientEntryDeps
+func getBasePaths(FS fs.FS) (*PathsFile, error) {
+	pathsFile := PathsFile{}
+	file, err := FS.Open("hwy_paths.json")
+	if err != nil {
+		return nil, err
 	}
+	defer file.Close()
+	decoder := json.NewDecoder(file)
+	err = decoder.Decode(&pathsFile)
+	if err != nil {
+		return nil, err
+	}
+	return &pathsFile, nil
+}
+
+func (h Hwy) Initialize() error {
+	if h.FS == nil {
+		return errors.New("FS is nil")
+	}
+
+	pathsFile, err := getBasePaths(h.FS)
+	if err != nil {
+		return err
+	}
+
+	if instancePaths == nil {
+		ip := make([]Path, 0, len(pathsFile.Paths))
+		instancePaths = &ip
+	}
+	for _, path := range pathsFile.Paths {
+		*instancePaths = append(*instancePaths, Path{
+			Pattern:  path.Pattern,
+			Segments: path.Segments,
+			PathType: path.PathType,
+			OutPath:  path.OutPath,
+			SrcPath:  path.SrcPath,
+			Deps:     path.Deps,
+		})
+	}
+
+	h.addDataFuncsToPaths()
+	instanceClientEntryDeps = &pathsFile.ClientEntryDeps
+
 	return nil
 }
 
-func (h Hwy) GetRouteData(r *http.Request) (*GetRouteDataOutput, error) {
-	activePathData := getMatchingPathData(r)
+func (h Hwy) GetRouteData(w http.ResponseWriter, r *http.Request) (*GetRouteDataOutput, error) {
+	activePathData := getMatchingPathData(w, r)
 
 	headBlocks, err := getExportedHeadBlocks(r, activePathData, &h.DefaultHeadBlocks)
 	if err != nil {
@@ -1064,4 +1092,65 @@ func GetDeps(matchingPaths *[]*MatchingPath) []string {
 		}
 	}
 	return deps
+}
+
+func (h Hwy) GetRootHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		routeData, err := h.GetRouteData(w, r)
+		if err != nil {
+			msg := "Error getting route data"
+			fmt.Printf(msg+": %v\n", err)
+			http.Error(w, msg, http.StatusInternalServerError)
+			return
+		}
+
+		if GetIsJSONRequest(r) {
+			w.Header().Set("Content-Type", "application/json")
+			err = json.NewEncoder(w).Encode(routeData)
+			if err != nil {
+				msg := "Error encoding JSON"
+				fmt.Printf(msg+": %v\n", err)
+				http.Error(w, msg, http.StatusInternalServerError)
+			}
+			return
+		}
+
+		tmpl, err := template.ParseFS(h.FS, h.RootTemplateLocation)
+		if err != nil {
+			msg := "Error loading template"
+			fmt.Printf(msg+": %v\n", err)
+			http.Error(w, msg, http.StatusInternalServerError)
+			return
+		}
+
+		headElements, err := GetHeadElements(routeData)
+		if err != nil {
+			msg := "Error getting head elements"
+			fmt.Printf(msg+": %v\n", err)
+			http.Error(w, msg, http.StatusInternalServerError)
+			return
+		}
+
+		ssrInnerHTML, err := GetSSRInnerHTML(routeData, true)
+		if err != nil {
+			msg := "Error getting SSR inner HTML"
+			fmt.Printf(msg+": %v\n", err)
+			http.Error(w, msg, http.StatusInternalServerError)
+			return
+		}
+
+		tmplData := map[string]interface{}{}
+		tmplData["HeadElements"] = headElements
+		tmplData["SSRInnerHTML"] = ssrInnerHTML
+		for key, value := range h.RootTemplateData {
+			tmplData[key] = value
+		}
+
+		err = tmpl.Execute(w, tmplData)
+		if err != nil {
+			msg := "Error executing template"
+			fmt.Printf(msg+": %v\n", err)
+			http.Error(w, msg, http.StatusInternalServerError)
+		}
+	})
 }

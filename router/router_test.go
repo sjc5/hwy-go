@@ -243,7 +243,7 @@ func test(path string) *ActivePathData {
 	r.URL.Path = path
 	r.Method = "GET"
 	instancePaths = &dummyPaths
-	return getMatchingPathData(&r)
+	return getMatchingPathData(nil, &r)
 }
 
 var dummyPaths = []Path{
