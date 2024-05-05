@@ -6,10 +6,14 @@ type BuildOptions = router.BuildOptions
 type Hwy = router.Hwy
 type HeadBlock = router.HeadBlock
 type DataFuncsMap = router.DataFuncsMap
-type DataProps = router.DataProps
+type LoaderProps = router.LoaderProps
+type ActionProps = router.ActionProps
 type HeadProps = router.HeadProps
 type Path = router.Path
 type PathsFile = router.PathsFile
+type Loader = router.Loader
+type Action = router.Action
+type Head = router.Head
 
 var Build = router.Build
 var NewLRUCache = router.NewLRUCache

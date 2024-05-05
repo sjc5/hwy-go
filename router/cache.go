@@ -7,7 +7,7 @@ import (
 
 type item struct {
 	key              string
-	value            interface{}
+	value            any
 	element          *list.Element
 	neverMoveToFront bool
 }
@@ -27,7 +27,7 @@ func NewLRUCache(maxItems int) *cache {
 	}
 }
 
-func (c *cache) Get(key string) (interface{}, bool) {
+func (c *cache) Get(key string) (any, bool) {
 	c.mu.RLock()
 	itm, found := c.items[key]
 	c.mu.RUnlock()
@@ -44,7 +44,7 @@ func (c *cache) Get(key string) (interface{}, bool) {
 	return itm.value, true
 }
 
-func (c *cache) Set(key string, value interface{}, neverMoveToFront bool) {
+func (c *cache) Set(key string, value any, neverMoveToFront bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 

@@ -53,35 +53,44 @@ type HeadBlock struct {
 	Title      string            `json:"title,omitempty"`
 }
 
-type Loader func(DataProps) (interface{}, error)
-type Action func(DataProps) (interface{}, error)
-type Head func(HeadProps) (*[]HeadBlock, error)
+type Loader func(*LoaderProps) (any, error)
+type Action func(*ActionProps) (any, error)
+type Head func(*HeadProps) (*[]HeadBlock, error)
 
-type DataProps struct {
+type LoaderProps struct {
 	Request       *http.Request
 	Params        *map[string]string
 	SplatSegments *[]string
 }
 
+type ActionProps struct {
+	Request        *http.Request
+	Params         *map[string]string
+	SplatSegments  *[]string
+	ResponseWriter http.ResponseWriter
+}
+
 type HeadProps struct {
-	DataProps
-	LoaderData interface{}
-	ActionData interface{}
+	Request       *http.Request
+	Params        *map[string]string
+	SplatSegments *[]string
+	LoaderData    any
+	ActionData    any
 }
 
 type DataFuncs struct {
-	Loader         Loader
-	Action         Action
-	Head           Head
-	MutateResponse func(http.ResponseWriter)
+	Loader      Loader
+	Action      Action
+	Head        Head
+	HandlerFunc http.HandlerFunc
 }
 
 type ActivePathData struct {
 	MatchingPaths               *[]*DecoratedPath
-	LoadersData                 *[]interface{}
+	LoadersData                 *[]any
 	ImportURLs                  *[]string
 	OutermostErrorBoundaryIndex int
-	ActionData                  *[]interface{}
+	ActionData                  *[]any
 	ActiveHeads                 *[]Head
 	SplatSegments               *[]string
 	Params                      *map[string]string
@@ -130,18 +139,18 @@ type gmpdItem struct {
 }
 
 type GetRouteDataOutput struct {
-	Title                       string                   `json:"title"`
-	MetaHeadBlocks              *[]*HeadBlock            `json:"metaHeadBlocks"`
-	RestHeadBlocks              *[]*HeadBlock            `json:"restHeadBlocks"`
-	LoadersData                 *[]interface{}           `json:"loadersData"`
-	ImportURLs                  *[]string                `json:"importURLs"`
-	OutermostErrorBoundaryIndex int                      `json:"outermostErrorBoundaryIndex"`
-	SplatSegments               *[]string                `json:"splatSegments"`
-	Params                      *map[string]string       `json:"params"`
-	ActionData                  *[]interface{}           `json:"actionData"`
-	AdHocData                   *map[string]*interface{} `json:"adHocData"`
-	BuildID                     string                   `json:"buildID"`
-	Deps                        *[]string                `json:"deps"`
+	Title                       string             `json:"title"`
+	MetaHeadBlocks              *[]*HeadBlock      `json:"metaHeadBlocks"`
+	RestHeadBlocks              *[]*HeadBlock      `json:"restHeadBlocks"`
+	LoadersData                 *[]any             `json:"loadersData"`
+	ImportURLs                  *[]string          `json:"importURLs"`
+	OutermostErrorBoundaryIndex int                `json:"outermostErrorBoundaryIndex"`
+	SplatSegments               *[]string          `json:"splatSegments"`
+	Params                      *map[string]string `json:"params"`
+	ActionData                  *[]any             `json:"actionData"`
+	AdHocData                   *map[string]*any   `json:"adHocData"`
+	BuildID                     string             `json:"buildID"`
+	Deps                        *[]string          `json:"deps"`
 }
 
 var instancePaths *[]Path
@@ -152,7 +161,7 @@ type Hwy struct {
 	FS                   fs.FS
 	DataFuncsMap         DataFuncsMap
 	RootTemplateLocation string
-	RootTemplateData     map[string]interface{}
+	RootTemplateData     map[string]any
 }
 
 type SortHeadBlocksOutput struct {
@@ -165,13 +174,13 @@ type SSRInnerHTMLInput struct {
 	HwyPrefix                   string
 	IsDev                       bool
 	BuildID                     string
-	LoadersData                 *[]interface{}
+	LoadersData                 *[]any
 	ImportURLs                  *[]string
 	OutermostErrorBoundaryIndex int
 	SplatSegments               *[]string
 	Params                      *map[string]string
-	ActionData                  *[]interface{}
-	AdHocData                   interface{}
+	ActionData                  *[]any
+	AdHocData                   any
 	Deps                        *[]string
 }
 
@@ -600,13 +609,21 @@ func getMatchingPathData(w http.ResponseWriter, r *http.Request) *ActivePathData
 		lastPath = (*item.FullyDecoratedMatchingPaths)[len(*item.FullyDecoratedMatchingPaths)-1]
 	}
 
-	var actionData interface{}
+	var actionData any
 	var actionDataError error
 	actionExists := lastPath.DataFuncs != nil && lastPath.DataFuncs.Action != nil
 	if actionExists {
-		actionData, actionDataError = getActionData(r, &lastPath.DataFuncs.Action, item.Params, item.SplatSegments)
+		actionData, actionDataError = getActionData(
+			&lastPath.DataFuncs.Action,
+			&ActionProps{
+				Request:        r,
+				Params:         item.Params,
+				SplatSegments:  item.SplatSegments,
+				ResponseWriter: w,
+			},
+		)
 	}
-	loadersData := make([]interface{}, len(*item.FullyDecoratedMatchingPaths))
+	loadersData := make([]any, len(*item.FullyDecoratedMatchingPaths))
 	errors := make([]error, len(*item.FullyDecoratedMatchingPaths))
 	var wg sync.WaitGroup
 	for i, path := range *item.FullyDecoratedMatchingPaths {
@@ -617,7 +634,7 @@ func getMatchingPathData(w http.ResponseWriter, r *http.Request) *ActivePathData
 				loadersData[i], errors[i] = nil, nil
 				return
 			}
-			loadersData[i], errors[i] = (dataFuncs.Loader)(DataProps{
+			loadersData[i], errors[i] = (dataFuncs.Loader)(&LoaderProps{
 				Request:       r,
 				Params:        item.Params,
 				SplatSegments: item.SplatSegments,
@@ -628,8 +645,8 @@ func getMatchingPathData(w http.ResponseWriter, r *http.Request) *ActivePathData
 
 	// Response mutation needs to be in sync, with the last path being the most important
 	for _, path := range *item.FullyDecoratedMatchingPaths {
-		if path.DataFuncs != nil && path.DataFuncs.MutateResponse != nil {
-			path.DataFuncs.MutateResponse(w)
+		if path.DataFuncs != nil && path.DataFuncs.HandlerFunc != nil {
+			path.DataFuncs.HandlerFunc(w, r)
 		}
 	}
 
@@ -682,7 +699,7 @@ func getMatchingPathData(w http.ResponseWriter, r *http.Request) *ActivePathData
 		locImportURLs := (*item.ImportURLs)[:outermostErrorIndex+1]
 		activePathData.ImportURLs = &locImportURLs
 		activePathData.OutermostErrorBoundaryIndex = closestParentErrorBoundaryIndex
-		*activePathData.ActionData = make([]interface{}, len(*activePathData.ImportURLs))
+		*activePathData.ActionData = make([]any, len(*activePathData.ImportURLs))
 		activePathData.SplatSegments = item.SplatSegments
 		activePathData.Params = item.Params
 		return &activePathData
@@ -693,7 +710,7 @@ func getMatchingPathData(w http.ResponseWriter, r *http.Request) *ActivePathData
 	activePathData.LoadersData = &loadersData
 	activePathData.ImportURLs = item.ImportURLs
 	activePathData.OutermostErrorBoundaryIndex = closestParentErrorBoundaryIndex
-	locActionData := make([]interface{}, len(*activePathData.ImportURLs))
+	locActionData := make([]any, len(*activePathData.ImportURLs))
 	if len(locActionData) > 0 {
 		locActionData[len(locActionData)-1] = actionData
 	}
@@ -708,22 +725,18 @@ var acceptedMethods = map[string]int{
 	"POST": 0, "PUT": 0, "PATCH": 0, "DELETE": 0,
 }
 
-func getActionData(r *http.Request, action *Action, params *map[string]string, splatSegments *[]string) (interface{}, error) {
-	if _, ok := acceptedMethods[r.Method]; !ok {
+func getActionData(action *Action, actionProps *ActionProps) (any, error) {
+	if _, ok := acceptedMethods[actionProps.Request.Method]; !ok {
 		return nil, errors.New("method not allowed")
 	}
 	if action == nil {
 		return nil, nil
 	}
 	actionFunc := *action
-	return actionFunc(DataProps{
-		Request:       r,
-		Params:        params,
-		SplatSegments: splatSegments,
-	})
+	return actionFunc(actionProps)
 }
 
-func findClosestParentErrorBoundaryIndex(activeErrorBoundaries []interface{}, outermostErrorIndex int) int {
+func findClosestParentErrorBoundaryIndex(activeErrorBoundaries []any, outermostErrorIndex int) int {
 	for i := outermostErrorIndex; i >= 0; i-- {
 		if activeErrorBoundaries[i] != nil {
 			return len(activeErrorBoundaries) - 1 - i
@@ -823,15 +836,13 @@ func getExportedHeadBlocks(r *http.Request, activePathData *ActivePathData, defa
 	for i, head := range *activePathData.ActiveHeads {
 		if head != nil {
 			headProps := HeadProps{
-				DataProps: DataProps{
-					Request:       r,
-					Params:        activePathData.Params,
-					SplatSegments: activePathData.SplatSegments,
-				},
-				LoaderData: (*activePathData.LoadersData)[i],
-				ActionData: (*activePathData.ActionData)[i],
+				Request:       r,
+				Params:        activePathData.Params,
+				SplatSegments: activePathData.SplatSegments,
+				LoaderData:    (*activePathData.LoadersData)[i],
+				ActionData:    (*activePathData.ActionData)[i],
 			}
-			localHeadBlocks, err := (head)(headProps)
+			localHeadBlocks, err := (head)(&headProps)
 			if err != nil {
 				return nil, err
 			}
@@ -1139,7 +1150,7 @@ func (h Hwy) GetRootHandler() http.Handler {
 			return
 		}
 
-		tmplData := map[string]interface{}{}
+		tmplData := map[string]any{}
 		tmplData["HeadElements"] = headElements
 		tmplData["SSRInnerHTML"] = ssrInnerHTML
 		for key, value := range h.RootTemplateData {
