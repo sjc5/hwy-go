@@ -18,8 +18,6 @@ type SegmentObj struct {
 	Segment     string
 }
 
-// __TODO -- need to handle redirects from loaders / actions
-
 const SplatSegment = ":catch*"
 
 var PathTypeUltimateCatch = "ultimate-catch"
@@ -127,7 +125,7 @@ type MatchingPath struct {
 
 type DecoratedPath struct {
 	DataFuncs *DataFuncs
-	PathType  string // only needed for testing __TODO
+	PathType  string // technically only needed for testing
 }
 
 type gmpdItem struct {
@@ -215,7 +213,7 @@ func decoratePaths(paths *[]*MatchingPath) *[]*DecoratedPath {
 	for _, path := range *paths {
 		decoratedPaths = append(decoratedPaths, &DecoratedPath{
 			DataFuncs: path.DataFuncs,
-			PathType:  path.PathType, // only needed for testing __TODO do something smarter here
+			PathType:  path.PathType,
 		})
 	}
 	return &decoratedPaths
@@ -1091,11 +1089,17 @@ func matcher(pattern string, path string) matcherOutput {
 func GetDeps(matchingPaths *[]*MatchingPath) []string {
 	var deps []string
 	for _, path := range *matchingPaths {
+		if path.Deps == nil {
+			continue
+		}
 		for _, dep := range *path.Deps {
 			if !slices.Contains(deps, dep) {
 				deps = append(deps, dep)
 			}
 		}
+	}
+	if instanceClientEntryDeps == nil {
+		return deps
 	}
 	for _, dep := range *instanceClientEntryDeps {
 		if !slices.Contains(deps, dep) {
