@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/evanw/esbuild/pkg/api"
 )
@@ -23,8 +24,6 @@ type BuildOptions struct {
 	UsePreactCompat bool
 }
 
-// __TODO -- allow for dirs starting with double underscore to be ignored
-
 func walkPages(pagesSrcDir string) []JSONSafePath {
 	var paths []JSONSafePath
 	filepath.WalkDir(pagesSrcDir, func(patternArg string, d fs.DirEntry, err error) error {
@@ -38,30 +37,38 @@ func walkPages(pagesSrcDir string) []JSONSafePath {
 		pattern := strings.TrimSuffix(cleanPatternArg, preExtDelineator+ext)
 		isIndex := false
 		patternToSplit := strings.TrimPrefix(pattern, "/")
-		segmentsInit := strings.Split(patternToSplit, "/")
+
+		// Clean out double underscore segments
+		segmentsInitWithDubUnderscores := strings.Split(patternToSplit, "/")
+		segmentsInit := make([]string, 0, len(segmentsInitWithDubUnderscores))
+		for _, segment := range segmentsInitWithDubUnderscores {
+			if strings.HasPrefix(segment, "__") {
+				continue
+			}
+			segmentsInit = append(segmentsInit, segment)
+		}
+
 		segments := make([]SegmentObj, len(segmentsInit))
 		for i, segmentStr := range segmentsInit {
-			newSegment := strings.Replace(segmentStr, "$", ":", -1)
 			isSplat := false
-			if newSegment == ":" {
-				newSegment = SplatSegment
+			if segmentStr == "$" {
 				isSplat = true
 			}
-			if newSegment == "_index" {
-				newSegment = ""
+			if segmentStr == "_index" {
+				segmentStr = ""
 				isIndex = true
 			}
 			segmentType := "normal"
 			if isSplat {
 				segmentType = "splat"
-			} else if strings.HasPrefix(newSegment, ":") {
+			} else if strings.HasPrefix(segmentStr, "$") {
 				segmentType = "dynamic"
 			} else if isIndex {
 				segmentType = "index"
 			}
 			segments[i] = SegmentObj{
 				SegmentType: segmentType,
-				Segment:     newSegment,
+				Segment:     segmentStr,
 			}
 		}
 		segmentStrs := make([]string, len(segments))
@@ -82,10 +89,18 @@ func walkPages(pagesSrcDir string) []JSONSafePath {
 		pathType := PathTypeStaticLayout
 		if isIndex {
 			pathType = PathTypeIndex
+			if patternToUse == "/" {
+				patternToUse += "_index"
+			} else {
+				patternToUse += "/_index"
+			}
 		} else if segments[len(segments)-1].SegmentType == "splat" {
 			pathType = PathTypeNonUltimateSplat
 		} else if segments[len(segments)-1].SegmentType == "dynamic" {
 			pathType = PathTypeDynamicLayout
+		}
+		if patternToUse == "/$" {
+			pathType = PathTypeUltimateCatch
 		}
 		paths = append(paths, JSONSafePath{
 			Pattern:  patternToUse,
@@ -145,10 +160,14 @@ type MetafileJSON struct {
 type PathsFile struct {
 	Paths           []JSONSafePath `json:"paths"`
 	ClientEntryDeps []ImportPath   `json:"clientEntryDeps"`
+	BuildID         string         `json:"buildID"`
 }
 
 func Build(opts BuildOptions) error {
-	fmt.Println("Building Hwy...")
+	startTime := time.Now()
+	buildID := fmt.Sprintf("%d", startTime.Unix())
+	fmt.Printf("Started new Hwy build with ID: %s\n", buildID)
+
 	pathsJSONOut := filepath.Join(opts.UnhashedOutDir, "hwy_paths.json")
 	err := writePathsToDisk(opts.PagesSrcDir, pathsJSONOut)
 	if err != nil {
@@ -243,6 +262,7 @@ func Build(opts BuildOptions) error {
 	pathsAsJSON, err := json.Marshal(PathsFile{
 		Paths:           *paths,
 		ClientEntryDeps: hwyClientEntryDeps,
+		BuildID:         buildID,
 	})
 	if err != nil {
 		return err
@@ -267,6 +287,8 @@ func Build(opts BuildOptions) error {
 		return err
 	}
 
+	endTime := time.Now()
+	fmt.Printf("Hwy build completed in: %s\n", endTime.Sub(startTime))
 	return nil
 }
 

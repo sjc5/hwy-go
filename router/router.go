@@ -18,8 +18,6 @@ type SegmentObj struct {
 	Segment     string
 }
 
-const SplatSegment = ":catch*"
-
 var PathTypeUltimateCatch = "ultimate-catch"
 var PathTypeIndex = "index"
 var PathTypeStaticLayout = "static-layout"
@@ -96,8 +94,6 @@ type ActivePathData struct {
 }
 
 type matcherOutput struct {
-	path               string
-	pattern            string
 	matches            bool
 	params             *map[string]string
 	score              int
@@ -153,6 +149,7 @@ type GetRouteDataOutput struct {
 
 var instancePaths *[]Path
 var instanceClientEntryDeps *[]string
+var instanceBuildID string
 
 type Hwy struct {
 	DefaultHeadBlocks    []HeadBlock
@@ -185,18 +182,12 @@ type SSRInnerHTMLInput struct {
 func getInitialMatchingPaths(pathToUse string) *[]MatchingPath {
 	var initialMatchingPaths []MatchingPath
 	for _, path := range *instancePaths {
-		var pathType string
-		if path.Pattern == "/"+SplatSegment {
-			pathType = PathTypeUltimateCatch
-		} else {
-			pathType = path.PathType
-		}
 		matcherOutput := matcher(path.Pattern, pathToUse)
 		if matcherOutput.matches {
 			initialMatchingPaths = append(initialMatchingPaths, MatchingPath{
 				Score:              matcherOutput.score,
 				RealSegmentsLength: matcherOutput.realSegmentsLength,
-				PathType:           pathType,
+				PathType:           path.PathType,
 				OutPath:            path.OutPath,
 				Segments:           path.Segments,
 				DataFuncs:          path.DataFuncs,
@@ -238,11 +229,11 @@ func getMatchStrength(pattern string, path string) MatchStrength {
 			score += 3
 			continue
 		}
-		if patternSegments[i] == SplatSegment {
+		if patternSegments[i] == "$" {
 			score += 1
 			continue
 		}
-		if strings.HasPrefix(patternSegments[i], ":") {
+		if strings.HasPrefix(patternSegments[i], "$") {
 			score += 2
 			continue
 		}
@@ -528,7 +519,7 @@ func getSplatSegmentsFromWinningPath(winner *MatchingPath, realPath string) *[]s
 
 	numOfNonSplatSegments := 0
 	for _, x := range *winner.Segments {
-		if x != SplatSegment {
+		if x != "$" {
 			numOfNonSplatSegments++
 		}
 	}
@@ -546,7 +537,7 @@ func getWinnerIsDynamicIndex(winner *MatchingPath) bool {
 	segmentsLength := len(*winner.Segments)
 	if winner.PathType == PathTypeIndex && segmentsLength >= 2 {
 		secondToLastSegment := (*winner.Segments)[segmentsLength-2]
-		return strings.HasPrefix(secondToLastSegment, ":")
+		return strings.HasPrefix(secondToLastSegment, "$")
 	}
 	return false
 }
@@ -610,7 +601,8 @@ func getMatchingPathData(w http.ResponseWriter, r *http.Request) *ActivePathData
 	var actionData any
 	var actionDataError error
 	actionExists := lastPath.DataFuncs != nil && lastPath.DataFuncs.Action != nil
-	if actionExists {
+	_, shouldRunAction := acceptedMethods[r.Method]
+	if actionExists && shouldRunAction {
 		actionData, actionDataError = getActionData(
 			&lastPath.DataFuncs.Action,
 			&ActionProps{
@@ -652,6 +644,7 @@ func getMatchingPathData(w http.ResponseWriter, r *http.Request) *ActivePathData
 	outermostErrorIndex := -1
 	for i, err := range errors {
 		if err != nil {
+			fmt.Println("ERROR: ", err)
 			thereAreErrors = true
 			outermostErrorIndex = i
 			break
@@ -659,6 +652,7 @@ func getMatchingPathData(w http.ResponseWriter, r *http.Request) *ActivePathData
 	}
 
 	if actionDataError != nil {
+		fmt.Println("ERROR: ", actionDataError)
 		thereAreErrors = true // __TODO -- test this
 		actionDataErrorIndex := len(loadersData) - 1
 		if thereAreErrors && actionDataErrorIndex < outermostErrorIndex {
@@ -724,9 +718,6 @@ var acceptedMethods = map[string]int{
 }
 
 func getActionData(action *Action, actionProps *ActionProps) (any, error) {
-	if _, ok := acceptedMethods[actionProps.Request.Method]; !ok {
-		return nil, errors.New("method not allowed")
-	}
 	if action == nil {
 		return nil, nil
 	}
@@ -745,7 +736,7 @@ func findClosestParentErrorBoundaryIndex(activeErrorBoundaries []any, outermostE
 
 func (h Hwy) addDataFuncsToPaths() {
 	for i, path := range *instancePaths {
-		if dataFuncs, ok := (h.DataFuncsMap)[path.SrcPath]; ok {
+		if dataFuncs, ok := (h.DataFuncsMap)[path.Pattern]; ok {
 			(*instancePaths)[i].DataFuncs = &dataFuncs
 		}
 	}
@@ -775,6 +766,7 @@ func (h Hwy) Initialize() error {
 	if err != nil {
 		return err
 	}
+	instanceBuildID = pathsFile.BuildID
 
 	if instancePaths == nil {
 		ip := make([]Path, 0, len(pathsFile.Paths))
@@ -805,7 +797,6 @@ func (h Hwy) GetRouteData(w http.ResponseWriter, r *http.Request) (*GetRouteData
 		return nil, err
 	}
 	sorted := sortHeadBlocks(headBlocks)
-	buildID := "" // __TODO buildID
 	if sorted.metaHeadBlocks == nil {
 		sorted.metaHeadBlocks = &[]*HeadBlock{}
 	}
@@ -823,7 +814,7 @@ func (h Hwy) GetRouteData(w http.ResponseWriter, r *http.Request) (*GetRouteData
 		Params:                      activePathData.Params,
 		ActionData:                  activePathData.ActionData,
 		AdHocData:                   nil, // __TODO
-		BuildID:                     buildID,
+		BuildID:                     instanceBuildID,
 		Deps:                        activePathData.Deps,
 	}, nil
 }
@@ -1029,17 +1020,18 @@ func GetSSRInnerHTML(routeData *GetRouteDataOutput, isDev bool) (*template.HTML,
 
 func GetIsJSONRequest(r *http.Request) bool {
 	queryKey := HwyPrefix + "json"
-	return r.URL.Query().Get(queryKey) != ""
+	return len(r.URL.Query().Get(queryKey)) > 0
 }
 
 func matcher(pattern string, path string) matcherOutput {
-	pattern = strings.TrimPrefix(pattern, "/")
+	pattern = strings.TrimSuffix(pattern, "/_index") // needs to be first
+	pattern = strings.TrimPrefix(pattern, "/")       // needs to be second
 	path = strings.TrimPrefix(path, "/")
 	patternSegments := strings.Split(pattern, "/")
 	pathSegments := strings.Split(path, "/")
 	adjPatternSegmentsLength := len(patternSegments)
 	pathSegmentsLength := len(pathSegments)
-	isCatch := patternSegments[adjPatternSegmentsLength-1] == SplatSegment
+	isCatch := patternSegments[adjPatternSegmentsLength-1] == "$"
 	if isCatch {
 		adjPatternSegmentsLength--
 	}
@@ -1056,14 +1048,14 @@ func matcher(pattern string, path string) matcherOutput {
 				matches = true
 				continue
 			}
-			if patternSegment == SplatSegment {
+			if patternSegment == "$" {
 				matches = true
 				continue
 			}
-			if strings.HasPrefix(patternSegment, ":") {
+			if strings.HasPrefix(patternSegment, "$") {
 				matches = true
 				paramKey := patternSegment[1:]
-				if paramKey != "catch*" {
+				if len(paramKey) > 0 {
 					params[paramKey] = pathSegments[i]
 				}
 				continue
@@ -1077,8 +1069,6 @@ func matcher(pattern string, path string) matcherOutput {
 	}
 	strength := getMatchStrength(pattern, path)
 	return matcherOutput{
-		path:               path,
-		pattern:            pattern,
 		matches:            matches,
 		params:             &params,
 		score:              strength.Score,
