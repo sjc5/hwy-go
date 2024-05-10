@@ -3,7 +3,6 @@ package router
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"html/template"
 	"io/fs"
 	"net/http"
@@ -644,7 +643,7 @@ func getMatchingPathData(w http.ResponseWriter, r *http.Request) *ActivePathData
 	outermostErrorIndex := -1
 	for i, err := range errors {
 		if err != nil {
-			fmt.Println("ERROR: ", err)
+			Log.Errorf("ERROR: %v", err)
 			thereAreErrors = true
 			outermostErrorIndex = i
 			break
@@ -652,10 +651,10 @@ func getMatchingPathData(w http.ResponseWriter, r *http.Request) *ActivePathData
 	}
 
 	if actionDataError != nil {
-		fmt.Println("ERROR: ", actionDataError)
+		Log.Errorf("ERROR: %v", actionDataError)
 		thereAreErrors = true // __TODO -- test this
 		actionDataErrorIndex := len(loadersData) - 1
-		if thereAreErrors && actionDataErrorIndex < outermostErrorIndex {
+		if actionDataErrorIndex < outermostErrorIndex || outermostErrorIndex < 0 {
 			outermostErrorIndex = actionDataErrorIndex
 		}
 	}
@@ -691,7 +690,8 @@ func getMatchingPathData(w http.ResponseWriter, r *http.Request) *ActivePathData
 		locImportURLs := (*item.ImportURLs)[:outermostErrorIndex+1]
 		activePathData.ImportURLs = &locImportURLs
 		activePathData.OutermostErrorBoundaryIndex = closestParentErrorBoundaryIndex
-		*activePathData.ActionData = make([]any, len(*activePathData.ImportURLs))
+		locActionData := make([]any, len(*activePathData.ImportURLs))
+		activePathData.ActionData = &locActionData
 		activePathData.SplatSegments = item.SplatSegments
 		activePathData.Params = item.Params
 		return &activePathData
@@ -1104,7 +1104,7 @@ func (h Hwy) GetRootHandler() http.Handler {
 		routeData, err := h.GetRouteData(w, r)
 		if err != nil {
 			msg := "Error getting route data"
-			fmt.Printf(msg+": %v\n", err)
+			Log.Errorf(msg+": %v\n", err)
 			http.Error(w, msg, http.StatusInternalServerError)
 			return
 		}
@@ -1114,7 +1114,7 @@ func (h Hwy) GetRootHandler() http.Handler {
 			err = json.NewEncoder(w).Encode(routeData)
 			if err != nil {
 				msg := "Error encoding JSON"
-				fmt.Printf(msg+": %v\n", err)
+				Log.Errorf(msg+": %v\n", err)
 				http.Error(w, msg, http.StatusInternalServerError)
 			}
 			return
@@ -1123,7 +1123,7 @@ func (h Hwy) GetRootHandler() http.Handler {
 		tmpl, err := template.ParseFS(h.FS, h.RootTemplateLocation)
 		if err != nil {
 			msg := "Error loading template"
-			fmt.Printf(msg+": %v\n", err)
+			Log.Errorf(msg+": %v\n", err)
 			http.Error(w, msg, http.StatusInternalServerError)
 			return
 		}
@@ -1131,7 +1131,7 @@ func (h Hwy) GetRootHandler() http.Handler {
 		headElements, err := GetHeadElements(routeData)
 		if err != nil {
 			msg := "Error getting head elements"
-			fmt.Printf(msg+": %v\n", err)
+			Log.Errorf(msg+": %v\n", err)
 			http.Error(w, msg, http.StatusInternalServerError)
 			return
 		}
@@ -1139,7 +1139,7 @@ func (h Hwy) GetRootHandler() http.Handler {
 		ssrInnerHTML, err := GetSSRInnerHTML(routeData, true)
 		if err != nil {
 			msg := "Error getting SSR inner HTML"
-			fmt.Printf(msg+": %v\n", err)
+			Log.Errorf(msg+": %v\n", err)
 			http.Error(w, msg, http.StatusInternalServerError)
 			return
 		}
@@ -1154,7 +1154,7 @@ func (h Hwy) GetRootHandler() http.Handler {
 		err = tmpl.Execute(w, tmplData)
 		if err != nil {
 			msg := "Error executing template"
-			fmt.Printf(msg+": %v\n", err)
+			Log.Errorf(msg+": %v\n", err)
 			http.Error(w, msg, http.StatusInternalServerError)
 		}
 	})

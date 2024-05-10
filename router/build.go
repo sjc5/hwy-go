@@ -166,7 +166,7 @@ type PathsFile struct {
 func Build(opts BuildOptions) error {
 	startTime := time.Now()
 	buildID := fmt.Sprintf("%d", startTime.Unix())
-	fmt.Printf("Started new Hwy build with ID: %s\n", buildID)
+	Log.Infof("new build id: %s", buildID)
 
 	pathsJSONOut := filepath.Join(opts.UnhashedOutDir, "hwy_paths.json")
 	err := writePathsToDisk(opts.PagesSrcDir, pathsJSONOut)
@@ -287,8 +287,7 @@ func Build(opts BuildOptions) error {
 		return err
 	}
 
-	endTime := time.Now()
-	fmt.Printf("Hwy build completed in: %s\n", endTime.Sub(startTime))
+	Log.Infof("build completed in %s\n", time.Since(startTime))
 	return nil
 }
 

@@ -1,9 +1,11 @@
 package router
 
 import (
-	"fmt"
+	"encoding/json"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -19,6 +21,61 @@ type testPath struct {
 		MatchingPaths []string
 		Params        map[string]string
 		SplatSegments []string
+	}
+}
+
+func init() {
+	setup()
+}
+
+func TestRouter(t *testing.T) {
+	defer clean()
+
+	// TEST "getMatchingPathData"
+	for _, path := range testPaths {
+		matchingPathData := testGetMatchingPathData(path.Path)
+
+		// Has expected number of matching paths
+		if len(*matchingPathData.MatchingPaths) != len(path.ExpectedOutput.MatchingPaths) {
+			Log.Errorf("Path: %s", path.Path)
+			t.Errorf("Expected %d matching paths, but got %d", len(path.ExpectedOutput.MatchingPaths), len(*matchingPathData.MatchingPaths))
+		}
+
+		for i, matchingPath := range *matchingPathData.MatchingPaths {
+			// Each matching path is of the expected type
+			if matchingPath.PathType != path.ExpectedOutput.MatchingPaths[i] {
+				Log.Errorf("Path: %s", path.Path)
+				t.Errorf("Expected matching path %d to be of type %s, but got %s", i, path.ExpectedOutput.MatchingPaths[i], matchingPath.PathType)
+			}
+		}
+
+		// Has expected number of params
+		if len(*matchingPathData.Params) != len(path.ExpectedOutput.Params) {
+			Log.Errorf("Path: %s", path.Path)
+			t.Errorf("Expected %d params, but got %d", len(path.ExpectedOutput.Params), len(*matchingPathData.Params))
+		}
+
+		for key, expectedParam := range path.ExpectedOutput.Params {
+			// Each param has the expected value
+			if (*matchingPathData.Params)[key] != expectedParam {
+				Log.Errorf("Path: %s", path.Path)
+				t.Errorf("Expected param %s to be %s, but got %s", key, expectedParam, (*matchingPathData.Params)[key])
+			}
+		}
+
+		// Has expected number of splat segments
+		if matchingPathData.SplatSegments != nil && len(*matchingPathData.SplatSegments) != len(path.ExpectedOutput.SplatSegments) {
+			Log.Errorf("Path: %s", path.Path)
+			t.Errorf("Expected %d splat segments, but got %d", len(path.ExpectedOutput.SplatSegments), len(*matchingPathData.SplatSegments))
+		}
+
+		for i, expectedSplatSegment := range path.ExpectedOutput.SplatSegments {
+			// Each splat segment has the expected value
+			if (*matchingPathData.SplatSegments)[i] != expectedSplatSegment {
+				Log.Errorf("Path: %s", path.Path)
+				t.Errorf("Expected splat segment %d to be %s, but got %s", i, expectedSplatSegment, (*matchingPathData.SplatSegments)[i])
+			}
+		}
 	}
 }
 
@@ -201,195 +258,104 @@ var testPaths = []testPath{
 	},
 }
 
-func TestRouter(t *testing.T) {
-	for _, path := range testPaths {
-		matchingPathData := test(path.Path)
-		if len(*matchingPathData.MatchingPaths) != len(path.ExpectedOutput.MatchingPaths) {
-			fmt.Println("Path:", path.Path)
-			t.Errorf("Expected %d matching paths, but got %d", len(path.ExpectedOutput.MatchingPaths), len(*matchingPathData.MatchingPaths))
-		}
-		for i, matchingPath := range *matchingPathData.MatchingPaths {
-			if matchingPath.PathType != path.ExpectedOutput.MatchingPaths[i] {
-				fmt.Println("Path:", path.Path)
-				t.Errorf("Expected matching path %d to be of type %s, but got %s", i, path.ExpectedOutput.MatchingPaths[i], matchingPath.PathType)
-			}
-		}
-		if len(*matchingPathData.Params) != len(path.ExpectedOutput.Params) {
-			fmt.Println("Path:", path.Path)
-			t.Errorf("Expected %d params, but got %d", len(path.ExpectedOutput.Params), len(*matchingPathData.Params))
-		}
-		for key, value := range path.ExpectedOutput.Params {
-			if (*matchingPathData.Params)[key] != value {
-				fmt.Println("Path:", path.Path)
-				t.Errorf("Expected param %s to be %s, but got %s", key, value, (*matchingPathData.Params)[key])
-			}
-		}
-		if matchingPathData.SplatSegments != nil && len(*matchingPathData.SplatSegments) != len(path.ExpectedOutput.SplatSegments) {
-			fmt.Println("Path:", path.Path)
-			t.Errorf("Expected %d splat segments, but got %d", len(path.ExpectedOutput.SplatSegments), len(*matchingPathData.SplatSegments))
-		}
-		for i, splatSegment := range path.ExpectedOutput.SplatSegments {
-			if (*matchingPathData.SplatSegments)[i] != splatSegment {
-				fmt.Println("Path:", path.Path)
-				t.Errorf("Expected splat segment %d to be %s, but got %s", i, splatSegment, (*matchingPathData.SplatSegments)[i])
-			}
-		}
-	}
+func clean() {
+	os.RemoveAll("../tmp")
+	Log.Infof("removed temporary fixtures")
 }
 
-func test(path string) *ActivePathData {
+var filesToMock = []string{
+	"client.entry.tsx",
+	"pages/$.ui.tsx",
+	"pages/_index.ui.tsx",
+	"pages/articles/_index.ui.tsx",
+	"pages/articles/test/articles/_index.ui.tsx",
+	"pages/bear/$bear_id/$.ui.tsx",
+	"pages/bear/$bear_id.ui.tsx",
+	"pages/bear/_index.ui.tsx",
+	"pages/bear.ui.tsx",
+	"pages/dashboard/$.ui.tsx",
+	"pages/dashboard/_index.ui.tsx",
+	"pages/dashboard/customers/$customer_id/_index.ui.tsx",
+	"pages/dashboard/customers/$customer_id/orders/$order_id.ui.tsx",
+	"pages/dashboard/customers/$customer_id/orders/_index.ui.tsx",
+	"pages/dashboard/customers/$customer_id/orders.ui.tsx",
+	"pages/dashboard/customers/$customer_id.ui.tsx",
+	"pages/dashboard/customers/_index.ui.tsx",
+	"pages/dashboard/customers.ui.tsx",
+	"pages/dashboard.ui.tsx",
+	"pages/dynamic-index/$pagename/_index.ui.tsx",
+	"pages/dynamic-index/__site_index/index.ui.tsx",
+	"pages/lion/$.ui.tsx",
+	"pages/lion/_index.ui.tsx",
+	"pages/lion.ui.tsx",
+	"pages/tiger/$tiger_id/$.ui.tsx",
+	"pages/tiger/$tiger_id/$tiger_cub_id.ui.tsx",
+	"pages/tiger/$tiger_id/_index.ui.tsx",
+	"pages/tiger/$tiger_id.ui.tsx",
+	"pages/tiger/_index.ui.tsx",
+	"pages/tiger.ui.tsx",
+}
+
+func testGetMatchingPathData(path string) *ActivePathData {
 	var r http.Request = http.Request{}
 	r.URL = &url.URL{}
 	r.URL.Path = path
 	r.Method = "GET"
-	instancePaths = &dummyPaths
 	return getMatchingPathData(nil, &r)
 }
 
-var dummyPaths = []Path{
-	{
-		Pattern:  "/$",
-		Segments: &[]string{"$"},
-		PathType: "ultimate-catch",
-	},
-	{
-		Pattern:  "/_index",
-		Segments: &[]string{""},
-		PathType: "index",
-	},
-	{
-		Pattern:  "/bear",
-		Segments: &[]string{"bear"},
-		PathType: "static-layout",
-	},
-	{
-		Pattern:  "/dashboard",
-		Segments: &[]string{"dashboard"},
-		PathType: "static-layout",
-	},
-	{
-		Pattern:  "/lion",
-		Segments: &[]string{"lion"},
-		PathType: "static-layout",
-	},
-	{
-		Pattern:  "/tiger",
-		Segments: &[]string{"tiger"},
-		PathType: "static-layout",
-	},
-	{
-		Pattern:  "/tiger/$tiger_id",
-		Segments: &[]string{"tiger", "$tiger_id"},
-		PathType: "dynamic-layout",
-	},
-	{
-		Pattern:  "/tiger/_index",
-		Segments: &[]string{"tiger", ""},
-		PathType: "index",
-	},
-	{
-		Pattern:  "/tiger/$tiger_id/$",
-		Segments: &[]string{"tiger", "$tiger_id", "$"},
-		PathType: "non-ultimate-splat",
-	},
-	{
-		Pattern:  "/tiger/$tiger_id/$tiger_cub_id",
-		Segments: &[]string{"tiger", "$tiger_id", "$tiger_cub_id"},
-		PathType: "dynamic-layout",
-	},
-	{
-		Pattern:  "/tiger/$tiger_id/_index",
-		Segments: &[]string{"tiger", "$tiger_id", ""},
-		PathType: "index",
-	},
-	{
-		Pattern:  "/lion/$",
-		Segments: &[]string{"lion", "$"},
-		PathType: "non-ultimate-splat",
-	},
-	{
-		Pattern:  "/lion/_index",
-		Segments: &[]string{"lion", ""},
-		PathType: "index",
-	},
-	{
-		Pattern:  "/dynamic-index/index",
-		Segments: &[]string{"dynamic-index", "index"},
-		PathType: "static-layout",
-	},
-	{
-		Pattern:  "/dynamic-index/$pagename/_index",
-		Segments: &[]string{"dynamic-index", "$pagename", ""},
-		PathType: "index",
-	},
-	{
-		Pattern:  "/dashboard/$",
-		Segments: &[]string{"dashboard", "$"},
-		PathType: "non-ultimate-splat",
-	},
-	{
-		Pattern:  "/dashboard/_index",
-		Segments: &[]string{"dashboard", ""},
-		PathType: "index",
-	},
-	{
-		Pattern:  "/dashboard/customers",
-		Segments: &[]string{"dashboard", "customers"},
-		PathType: "static-layout",
-	},
-	{
-		Pattern:  "/dashboard/customers/$customer_id",
-		Segments: &[]string{"dashboard", "customers", "$customer_id"},
-		PathType: "dynamic-layout",
-	},
-	{
-		Pattern:  "/dashboard/customers/_index",
-		Segments: &[]string{"dashboard", "customers", ""},
-		PathType: "index",
-	},
-	{
-		Pattern:  "/dashboard/customers/$customer_id/_index",
-		Segments: &[]string{"dashboard", "customers", "$customer_id", ""},
-		PathType: "index",
-	},
-	{
-		Pattern:  "/dashboard/customers/$customer_id/orders",
-		Segments: &[]string{"dashboard", "customers", "$customer_id", "orders"},
-		PathType: "static-layout",
-	},
-	{
-		Pattern:  "/dashboard/customers/$customer_id/orders/$order_id",
-		Segments: &[]string{"dashboard", "customers", "$customer_id", "orders", "$order_id"},
-		PathType: "dynamic-layout",
-	},
-	{
-		Pattern:  "/dashboard/customers/$customer_id/orders/_index",
-		Segments: &[]string{"dashboard", "customers", "$customer_id", "orders", ""},
-		PathType: "index",
-	},
-	{
-		Pattern:  "/bear/$bear_id",
-		Segments: &[]string{"bear", "$bear_id"},
-		PathType: "dynamic-layout",
-	},
-	{
-		Pattern:  "/bear/_index",
-		Segments: &[]string{"bear", ""},
-		PathType: "index",
-	},
-	{
-		Pattern:  "/bear/$bear_id/$",
-		Segments: &[]string{"bear", "$bear_id", "$"},
-		PathType: "non-ultimate-splat",
-	},
-	{
-		Pattern:  "/articles/_index",
-		Segments: &[]string{"articles", ""},
-		PathType: "index",
-	},
-	{
-		Pattern:  "/articles/test/articles/_index",
-		Segments: &[]string{"articles", "test", "articles", ""},
-		PathType: "index",
-	},
+func setup() {
+	// temporarily create fixtures for testing
+	for _, file := range filesToMock {
+		targetPath := "../tmp/fixtures/" + file
+		err := os.MkdirAll(filepath.Dir(targetPath), 0755)
+		if err != nil {
+			panic(err)
+		}
+		err = os.WriteFile(targetPath, []byte{}, 0644)
+		if err != nil {
+			panic(err)
+		}
+	}
+	Log.Infof("created temporary fixtures for testing")
+
+	// Run the Hwy build
+	err := Build(BuildOptions{
+		PagesSrcDir:    "../tmp/fixtures/pages",
+		HashedOutDir:   "../tmp/out",
+		UnhashedOutDir: "../tmp/out",
+		ClientEntryOut: "../tmp/out",
+		ClientEntry:    "../tmp/fixtures/client.entry.tsx",
+	})
+	if err != nil {
+		panic(err)
+	}
+
+	// Grab the generated paths file
+	pathsFileLocation := "../tmp/out/hwy_paths.json"
+	pathsFileBytes, err := os.ReadFile(pathsFileLocation)
+	if err != nil {
+		panic(err)
+	}
+	pathsFileJSON := PathsFile{}
+	err = json.Unmarshal(pathsFileBytes, &pathsFileJSON)
+	if err != nil {
+		panic(err)
+	}
+
+	// Populate the global in-memory instancePaths
+	var paths []Path
+	for _, jsonSafePath := range pathsFileJSON.Paths {
+		paths = append(paths, Path{
+			Pattern:  jsonSafePath.Pattern,
+			Segments: jsonSafePath.Segments,
+			PathType: jsonSafePath.PathType,
+			OutPath:  jsonSafePath.OutPath,
+			SrcPath:  jsonSafePath.SrcPath,
+			Deps:     jsonSafePath.Deps,
+		})
+	}
+	instancePaths = &paths
+
+	// Off to the races!
 }
