@@ -12,16 +12,19 @@ import (
 	"time"
 
 	"github.com/evanw/esbuild/pkg/api"
+	"github.com/sjc5/kit/pkg/rpc"
 )
 
 type BuildOptions struct {
-	IsDev           bool
-	ClientEntry     string
-	PagesSrcDir     string
-	HashedOutDir    string
-	UnhashedOutDir  string
-	ClientEntryOut  string
-	UsePreactCompat bool
+	IsDev             bool
+	ClientEntry       string
+	PagesSrcDir       string
+	HashedOutDir      string
+	UnhashedOutDir    string
+	ClientEntryOut    string
+	UsePreactCompat   bool
+	DataFuncsMap      DataFuncsMap
+	GeneratedTSOutDir string
 }
 
 func walkPages(pagesSrcDir string) []JSONSafePath {
@@ -163,6 +166,37 @@ type PathsFile struct {
 	BuildID         string         `json:"buildID"`
 }
 
+func GenerateTS(opts BuildOptions) error {
+	fmt.Println("======= START TYPESCRIPT GENERATION =======")
+	var routeDefs []rpc.RouteDef
+
+	for k, v := range opts.DataFuncsMap {
+		if v.Loader != nil {
+			routeDefs = append(routeDefs, rpc.RouteDef{
+				Key:    k,
+				Type:   rpc.TypeQuery,
+				Output: v.LoaderOutput,
+			})
+		}
+		if v.Action != nil {
+			routeDefs = append(routeDefs, rpc.RouteDef{
+				Key:    k,
+				Type:   rpc.TypeMutation,
+				Input:  v.ActionInput,
+				Output: v.ActionOutput,
+			})
+		}
+	}
+
+	err := rpc.GenerateTypeScript(rpc.Opts{
+		OutDest:   opts.GeneratedTSOutDir,
+		RouteDefs: routeDefs,
+	})
+
+	fmt.Println("======== END TYPESCRIPT GENERATION ========")
+	return err
+}
+
 func Build(opts BuildOptions) error {
 	startTime := time.Now()
 	buildID := fmt.Sprintf("%d", startTime.Unix())
@@ -287,7 +321,7 @@ func Build(opts BuildOptions) error {
 		return err
 	}
 
-	Log.Infof("build completed in %s\n", time.Since(startTime))
+	Log.Infof("build completed in %s", time.Since(startTime))
 	return nil
 }
 

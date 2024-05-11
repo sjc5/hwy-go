@@ -16,6 +16,7 @@ type Action = router.Action
 type Head = router.Head
 
 var Build = router.Build
+var GenerateTS = router.GenerateTS
 var NewLRUCache = router.NewLRUCache
 var GetIsJSONRequest = router.GetIsJSONRequest
 var GetHeadElements = router.GetHeadElements

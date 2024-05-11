@@ -78,6 +78,11 @@ type DataFuncs struct {
 	Action      Action
 	Head        Head
 	HandlerFunc http.HandlerFunc
+
+	// Used in TypeScript generation
+	LoaderOutput any
+	ActionInput  any
+	ActionOutput any
 }
 
 type ActivePathData struct {
