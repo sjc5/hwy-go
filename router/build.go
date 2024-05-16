@@ -166,8 +166,7 @@ type PathsFile struct {
 	BuildID         string         `json:"buildID"`
 }
 
-func GenerateTS(opts BuildOptions) error {
-	fmt.Println("======= START TYPESCRIPT GENERATION =======")
+func GenerateTypeScript(opts BuildOptions) error {
 	var routeDefs []rpc.RouteDef
 
 	for k, v := range opts.DataFuncsMap {
@@ -193,7 +192,6 @@ func GenerateTS(opts BuildOptions) error {
 		RouteDefs: routeDefs,
 	})
 
-	fmt.Println("======== END TYPESCRIPT GENERATION ========")
 	return err
 }
 
@@ -324,10 +322,6 @@ func Build(opts BuildOptions) error {
 	Log.Infof("build completed in %s", time.Since(startTime))
 	return nil
 }
-
-// 1 -- Generate TS types from Go loaders, actions, and head functions
-// 2 -- Run Hwy build of the frontend
-// 3 -- Run Kiruna build of the backend
 
 func findAllDependencies(metafile *MetafileJSON, entry ImportPath) ([]ImportPath, error) {
 	seen := make(map[ImportPath]bool)
